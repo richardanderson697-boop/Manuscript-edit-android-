@@ -1,5 +1,8 @@
 package com.example.ui.screens
 
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -11,21 +14,27 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.EditNote
-import androidx.compose.material.icons.outlined.FilterList
+import androidx.compose.material.icons.outlined.FolderOpen
+import androidx.compose.material.icons.outlined.People
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.InconsistencyType
+import com.example.ui.components.CharacterCard
 import com.example.ui.components.InconsistencyCard
 import com.example.ui.viewmodel.ManuscriptViewModel
+import java.io.BufferedReader
+import java.io.InputStreamReader
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -33,17 +42,37 @@ fun EditorProofreadScreen(
     viewModel: ManuscriptViewModel,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     val activeManuscript by viewModel.activeManuscript.collectAsState()
     val chapters by viewModel.activeChapters.collectAsState()
     val inconsistencies by viewModel.activeInconsistencies.collectAsState()
+    val characters by viewModel.activeCharacters.collectAsState()
     val selectedChapterIdx by viewModel.selectedChapterIndex.collectAsState()
     val filterType by viewModel.inconsistencyFilterType.collectAsState()
     val isScanning by viewModel.isScanning.collectAsState()
 
-    var activeTab by remember { mutableIntStateOf(0) } // 0: Inconsistencies Inspector, 1: Live Manuscript Reader / Manual Edit
+    var activeTab by remember { mutableIntStateOf(0) } // 0: Issues & Fixes, 1: Manuscript Editor, 2: Character Bible
     var chapterDropdownExpanded by remember { mutableStateOf(false) }
     var showAddChapterDialog by remember { mutableStateOf(false) }
+    var showDeleteChapterConfirm by remember { mutableStateOf(false) }
     var newChapterContent by remember { mutableStateOf("") }
+    var newChapterFileName by remember { mutableStateOf("") }
+
+    val chapterFileLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        uri?.let { fileUri ->
+            try {
+                context.contentResolver.openInputStream(fileUri)?.use { inputStream ->
+                    val reader = BufferedReader(InputStreamReader(inputStream))
+                    newChapterContent = reader.readText()
+                    newChapterFileName = fileUri.lastPathSegment?.substringAfterLast('/') ?: "Chapter File"
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
 
     val filteredInconsistencies = inconsistencies.filter { inc ->
         (selectedChapterIdx == 0 || inc.chapterIndex == selectedChapterIdx) &&
@@ -71,18 +100,31 @@ fun EditorProofreadScreen(
             text = {
                 Column {
                     Text(
-                        text = "Paste your next chapter text below. It will be linked as Chapter ${(chapters.maxOfOrNull { it.chapterIndex } ?: 0) + 1} and scanned for cross-chapter continuity.",
+                        text = "Paste text or choose a .txt file. It will be added as Chapter ${(chapters.maxOfOrNull { it.chapterIndex } ?: 0) + 1} and parsed for cross-chapter continuity.",
                         color = Color(0xFFC3BBDC),
                         fontSize = 12.sp
                     )
                     Spacer(modifier = Modifier.height(10.dp))
+
+                    OutlinedButton(
+                        onClick = { chapterFileLauncher.launch("text/*") },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFE2B563))
+                    ) {
+                        Icon(Icons.Outlined.FolderOpen, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(if (newChapterFileName.isNotEmpty()) "Loaded: $newChapterFileName" else "Pick .txt Chapter File")
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
                     OutlinedTextField(
                         value = newChapterContent,
                         onValueChange = { newChapterContent = it },
-                        placeholder = { Text("Paste chapter text here... (Supports 'Chapter 2', 'Chapter 3' headings)") },
+                        placeholder = { Text("Paste chapter text here...") },
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(180.dp),
+                            .height(160.dp),
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedBorderColor = Color(0xFFE2B563),
                             unfocusedBorderColor = Color(0xFF3B3454),
@@ -99,6 +141,7 @@ fun EditorProofreadScreen(
                         if (activeMsId != null && newChapterContent.isNotBlank()) {
                             viewModel.appendChaptersToManuscript(activeMsId, newChapterContent)
                             newChapterContent = ""
+                            newChapterFileName = ""
                             showAddChapterDialog = false
                         }
                     },
@@ -110,6 +153,32 @@ fun EditorProofreadScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showAddChapterDialog = false }) {
+                    Text("Cancel", color = Color(0xFFA099B8))
+                }
+            }
+        )
+    }
+
+    if (showDeleteChapterConfirm && activeChapterObj != null) {
+        AlertDialog(
+            onDismissRequest = { showDeleteChapterConfirm = false },
+            containerColor = Color(0xFF1C182A),
+            title = { Text("Delete Chapter ${activeChapterObj.chapterIndex}?", color = Color.White, fontWeight = FontWeight.Bold) },
+            text = { Text("Are you sure you want to remove '${activeChapterObj.title}' from this manuscript?", color = Color(0xFFC3BBDC)) },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.deleteChapter(activeChapterObj.id)
+                        viewModel.selectChapterIndex(0)
+                        showDeleteChapterConfirm = false
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE57373), contentColor = Color.White)
+                ) {
+                    Text("Delete Chapter", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteChapterConfirm = false }) {
                     Text("Cancel", color = Color(0xFFA099B8))
                 }
             }
@@ -203,27 +272,39 @@ fun EditorProofreadScreen(
                     }
                 }
 
-                Button(
-                    onClick = { viewModel.scanActiveManuscript() },
-                    shape = RoundedCornerShape(20.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = Color(0xFFE2B563),
-                        contentColor = Color(0xFF12101C)
-                    ),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                    modifier = Modifier.testTag("rescan_ai_button")
-                ) {
-                    if (isScanning) {
-                        CircularProgressIndicator(
-                            color = Color(0xFF12101C),
-                            modifier = Modifier.size(16.dp),
-                            strokeWidth = 2.dp
-                        )
-                    } else {
-                        Icon(Icons.Outlined.AutoAwesome, contentDescription = null, modifier = Modifier.size(16.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (selectedChapterIdx > 0 && chapters.size > 1) {
+                        IconButton(
+                            onClick = { showDeleteChapterConfirm = true },
+                            modifier = Modifier.testTag("delete_chapter_button")
+                        ) {
+                            Icon(Icons.Outlined.Delete, contentDescription = "Delete Chapter", tint = Color(0xFFE57373))
+                        }
+                        Spacer(modifier = Modifier.width(4.dp))
                     }
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(if (isScanning) "Scanning..." else "AI Re-Scan", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+
+                    Button(
+                        onClick = { viewModel.scanActiveManuscript() },
+                        shape = RoundedCornerShape(20.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFFE2B563),
+                            contentColor = Color(0xFF12101C)
+                        ),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                        modifier = Modifier.testTag("rescan_ai_button")
+                    ) {
+                        if (isScanning) {
+                            CircularProgressIndicator(
+                                color = Color(0xFF12101C),
+                                modifier = Modifier.size(16.dp),
+                                strokeWidth = 2.dp
+                            )
+                        } else {
+                            Icon(Icons.Outlined.AutoAwesome, contentDescription = null, modifier = Modifier.size(16.dp))
+                        }
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(if (isScanning) "Scanning..." else "AI Re-Scan", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
                 }
             }
         }
@@ -239,9 +320,9 @@ fun EditorProofreadScreen(
                 onClick = { activeTab = 0 },
                 text = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.Warning, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Issues & Fixes (${filteredInconsistencies.size})", fontWeight = FontWeight.Bold)
+                        Icon(Icons.Default.Warning, contentDescription = null, modifier = Modifier.size(15.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Issues (${filteredInconsistencies.size})", fontWeight = FontWeight.Bold, fontSize = 12.sp)
                     }
                 }
             )
@@ -250,9 +331,20 @@ fun EditorProofreadScreen(
                 onClick = { activeTab = 1 },
                 text = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Outlined.EditNote, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Manuscript Editor", fontWeight = FontWeight.Bold)
+                        Icon(Icons.Outlined.EditNote, contentDescription = null, modifier = Modifier.size(15.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Editor", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    }
+                }
+            )
+            Tab(
+                selected = activeTab == 2,
+                onClick = { activeTab = 2 },
+                text = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Outlined.People, contentDescription = null, modifier = Modifier.size(15.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Characters (${characters.size})", fontWeight = FontWeight.Bold, fontSize = 12.sp)
                     }
                 }
             )
@@ -388,7 +480,7 @@ fun EditorProofreadScreen(
                     item { Spacer(modifier = Modifier.height(30.dp)) }
                 }
             }
-        } else {
+        } else if (activeTab == 1) {
             // Live Manuscript Editor View
             Column(
                 modifier = Modifier
@@ -463,6 +555,55 @@ fun EditorProofreadScreen(
                     )
                 }
             }
+        } else {
+            // Character Bible Tab
+            if (characters.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(32.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(
+                            imageVector = Icons.Outlined.People,
+                            contentDescription = null,
+                            tint = Color(0xFFE2B563),
+                            modifier = Modifier.size(56.dp)
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            text = "No Character Profiles Yet",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "Tap 'AI Re-Scan' to automatically extract character bios and timelines across chapters.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFFA099B8)
+                        )
+                    }
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    items(characters, key = { it.id }) { character ->
+                        CharacterCard(
+                            character = character,
+                            onEdit = {},
+                            onDelete = { viewModel.deleteCharacter(character.id) }
+                        )
+                    }
+                    item { Spacer(modifier = Modifier.height(30.dp)) }
+                }
+            }
         }
     }
 }
+

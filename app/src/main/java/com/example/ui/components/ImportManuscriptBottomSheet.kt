@@ -9,6 +9,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AutoStories
+import androidx.compose.material.icons.filled.Create
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.FileUpload
@@ -32,14 +34,17 @@ fun ImportManuscriptBottomSheet(
     onDismiss: () -> Unit,
     onImportText: (title: String, author: String, text: String) -> Unit,
     onImportGoogleDocs: (url: String, title: String, author: String) -> Unit,
+    onCreateNewBook: (title: String, author: String, chapterTitle: String, chapterContent: String) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    var selectedTab by remember { mutableIntStateOf(0) } // 0: Text Paste / File, 1: Google Docs
+    var selectedTab by remember { mutableIntStateOf(0) } // 0: File / Import, 1: New Book, 2: Google Docs
 
     var title by remember { mutableStateOf("") }
     var author by remember { mutableStateOf("") }
     var rawText by remember { mutableStateOf("") }
+    var firstChapterTitle by remember { mutableStateOf("Chapter 1") }
+    var firstChapterText by remember { mutableStateOf("") }
     var googleDocsUrl by remember { mutableStateOf("") }
     var selectedFileName by remember { mutableStateOf("") }
 
@@ -76,7 +81,7 @@ fun ImportManuscriptBottomSheet(
                 .verticalScroll(rememberScrollState())
         ) {
             Text(
-                text = "Import Manuscript",
+                text = "Add or Import Manuscript",
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold,
                 color = Color.White
@@ -97,7 +102,7 @@ fun ImportManuscriptBottomSheet(
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.Default.FileUpload, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Text / .txt File")
+                            Text(".txt File / Paste", fontSize = 12.sp)
                         }
                     }
                 )
@@ -106,9 +111,20 @@ fun ImportManuscriptBottomSheet(
                     onClick = { selectedTab = 1 },
                     text = {
                         Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Create, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("New Book", fontSize = 12.sp)
+                        }
+                    }
+                )
+                Tab(
+                    selected = selectedTab == 2,
+                    onClick = { selectedTab = 2 },
+                    text = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.Default.Link, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Google Docs Link")
+                            Text("Google Docs", fontSize = 12.sp)
                         }
                     }
                 )
@@ -159,6 +175,7 @@ fun ImportManuscriptBottomSheet(
             Spacer(modifier = Modifier.height(12.dp))
 
             if (selectedTab == 0) {
+                // Tab 0: File Pick or Paste multi-chapter text
                 OutlinedButton(
                     onClick = { filePickerLauncher.launch("text/*") },
                     modifier = Modifier.fillMaxWidth(),
@@ -170,7 +187,7 @@ fun ImportManuscriptBottomSheet(
                     Icon(Icons.Default.FolderOpen, contentDescription = null)
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        if (selectedFileName.isNotEmpty()) "File Selected: $selectedFileName"
+                        if (selectedFileName.isNotEmpty()) "Selected: $selectedFileName.txt"
                         else "Pick .txt File from Device Storage"
                     )
                 }
@@ -180,8 +197,8 @@ fun ImportManuscriptBottomSheet(
                 OutlinedTextField(
                     value = rawText,
                     onValueChange = { rawText = it },
-                    label = { Text("Manuscript Text or Paste Content") },
-                    placeholder = { Text("Paste manuscript text here... (Supports multi-chapter 'Chapter 1', 'Chapter 2' text)") },
+                    label = { Text("Manuscript Text (Multi-Chapter or Single)") },
+                    placeholder = { Text("Paste manuscript text here... (Headings like 'Chapter 1', 'Chapter 2' will be auto-split)") },
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(180.dp)
@@ -218,9 +235,70 @@ fun ImportManuscriptBottomSheet(
                 ) {
                     Icon(Icons.Default.FileUpload, contentDescription = null)
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("Import & Parse Chapters", fontWeight = FontWeight.Bold)
+                    Text("Import & Auto-Split Chapters", fontWeight = FontWeight.Bold)
+                }
+            } else if (selectedTab == 1) {
+                // Tab 1: Create New Book from scratch
+                OutlinedTextField(
+                    value = firstChapterTitle,
+                    onValueChange = { firstChapterTitle = it },
+                    label = { Text("First Chapter Title") },
+                    placeholder = { Text("e.g. Chapter 1: The Departure") },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = Color(0xFFE2B563),
+                        unfocusedBorderColor = Color(0xFF3B3454),
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White,
+                        focusedLabelColor = Color(0xFFE2B563),
+                        unfocusedLabelColor = Color(0xFFA099B8)
+                    ),
+                    singleLine = true
+                )
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                OutlinedTextField(
+                    value = firstChapterText,
+                    onValueChange = { firstChapterText = it },
+                    label = { Text("First Chapter Text") },
+                    placeholder = { Text("Write your chapter content here...") },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(180.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = Color(0xFFE2B563),
+                        unfocusedBorderColor = Color(0xFF3B3454),
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White,
+                        focusedLabelColor = Color(0xFFE2B563),
+                        unfocusedLabelColor = Color(0xFFA099B8)
+                    )
+                )
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                Button(
+                    onClick = {
+                        onCreateNewBook(title, author, firstChapterTitle, firstChapterText)
+                        onDismiss()
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp)
+                        .testTag("submit_create_new_book_button"),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFFE2B563),
+                        contentColor = Color(0xFF12101C)
+                    )
+                ) {
+                    Icon(Icons.Default.AutoStories, contentDescription = null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Create Book & Open Workspace", fontWeight = FontWeight.Bold)
                 }
             } else {
+                // Tab 2: Google Docs Sync
                 OutlinedTextField(
                     value = googleDocsUrl,
                     onValueChange = { googleDocsUrl = it },
@@ -293,4 +371,5 @@ fun ImportManuscriptBottomSheet(
         }
     }
 }
+
 

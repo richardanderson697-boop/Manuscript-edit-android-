@@ -137,28 +137,41 @@ class GeminiProofreadingRepository {
      * Fallback heuristic proofreader if offline or API key isn't provided.
      * Performs dynamic cross-chapter pattern scanning for any custom manuscript.
      */
+    /**
+     * Fallback heuristic proofreader if offline or API key isn't provided.
+     * Performs dynamic cross-chapter pattern scanning for any custom manuscript.
+     */
     private fun performFallbackAnalysis(
         manuscriptId: Long,
         chapters: List<Chapter>
     ): List<Inconsistency> {
         val inconsistencies = mutableListOf<Inconsistency>()
+        if (chapters.isEmpty()) return inconsistencies
 
-        // 1. Dynamic Cross-Chapter Name Spelling Variation Scanner
+        // 1. Dynamic Cross-Chapter Proper Noun Spelling Variation Scanner
         val chapterWordsMap = chapters.associate { ch ->
             ch.chapterIndex to Regex("\\b[A-Z][a-z]{3,15}\\b").findAll(ch.rawContent)
                 .map { it.value }.toSet()
         }
 
-        // Compare proper nouns across chapters for edit distance / typos (e.g., Sterling vs Stirling, Jonathan vs Johnathan)
         val allProperNouns = chapterWordsMap.values.flatten().toSet()
+        val checkedPairs = mutableSetOf<String>()
+
         for (noun1 in allProperNouns) {
             for (noun2 in allProperNouns) {
-                if (noun1 != noun2 && noun1.length >= 4 && noun2.length >= 4 &&
-                    noun1.take(1) == noun2.take(1) &&
+                val pairKey = if (noun1 < noun2) "$noun1:$noun2" else "$noun2:$noun1"
+                if (noun1 != noun2 && !checkedPairs.contains(pairKey) &&
+                    noun1.length >= 4 && noun2.length >= 4 &&
+                    noun1.first() == noun2.first() &&
                     isOneEditDistance(noun1, noun2)) {
-                    // Find which chapter contains noun2 (the variant)
-                    chapters.forEach { ch ->
-                        if (ch.rawContent.contains(noun2) && !inconsistencies.any { it.originalText == noun2 && it.chapterIndex == ch.chapterIndex }) {
+                    checkedPairs.add(pairKey)
+
+                    // Find which chapter introduced noun1 and which has noun2
+                    val firstChapter1 = chapters.firstOrNull { it.rawContent.contains(noun1) }
+                    val chaptersWith2 = chapters.filter { it.rawContent.contains(noun2) && it != firstChapter1 }
+
+                    chaptersWith2.forEach { ch ->
+                        if (!inconsistencies.any { it.originalText == noun2 && it.chapterIndex == ch.chapterIndex }) {
                             inconsistencies.add(
                                 Inconsistency(
                                     manuscriptId = manuscriptId,
@@ -167,8 +180,8 @@ class GeminiProofreadingRepository {
                                     type = InconsistencyType.NAME_MISMATCH,
                                     severity = InconsistencySeverity.LOW,
                                     originalText = noun2,
-                                    contextSnippet = "Spelled '$noun1' in earlier chapter vs '$noun2' in Chapter ${ch.chapterIndex}.",
-                                    explanation = "Cross-chapter name spelling variation detected: '$noun2' differs from '$noun1'.",
+                                    contextSnippet = "Spelled '$noun1' in Chapter ${firstChapter1?.chapterIndex ?: 1} vs '$noun2' in Chapter ${ch.chapterIndex}.",
+                                    explanation = "Possible name/proper noun spelling variation: '$noun2' may be a typo of established '$noun1'.",
                                     suggestedFix = noun1,
                                     lineNumber = findLineNumber(ch.rawContent, noun2)
                                 )
@@ -179,62 +192,48 @@ class GeminiProofreadingRepository {
             }
         }
 
-        // 2. Specific checks for sample manuscript & general continuity heuristics
+        // 2. Cross-Chapter Physical Trait Scanner (Eye color, Hair color shifts)
+        val eyeColors = listOf("amber", "emerald", "blue", "green", "brown", "hazel", "grey", "gray", "dark", "violet")
+        val eyeMatches = mutableListOf<Triple<Int, String, Long>>() // chapterIndex, color, chapterId
+        chapters.forEach { ch ->
+            eyeColors.forEach { color ->
+                val pattern = Regex("(?i)\\b$color\\s+eyes?\\b")
+                if (pattern.containsMatchIn(ch.rawContent)) {
+                    eyeMatches.add(Triple(ch.chapterIndex, color, ch.id))
+                }
+            }
+        }
+        if (eyeMatches.size >= 2) {
+            val first = eyeMatches.first()
+            eyeMatches.drop(1).forEach { next ->
+                if (!next.second.equals(first.second, ignoreCase = true)) {
+                    val targetCh = chapters.find { it.chapterIndex == next.first }
+                    val snippet = "${next.second} eyes"
+                    if (targetCh != null && !inconsistencies.any { it.chapterIndex == next.first && it.originalText.contains("eyes", true) }) {
+                        inconsistencies.add(
+                            Inconsistency(
+                                manuscriptId = manuscriptId,
+                                chapterId = targetCh.id,
+                                chapterIndex = next.first,
+                                type = InconsistencyType.CHARACTER_TRAIT,
+                                severity = InconsistencySeverity.HIGH,
+                                originalText = snippet,
+                                contextSnippet = "Chapter ${first.first} described eye color as '${first.second}', but Chapter ${next.first} uses '${next.second}'.",
+                                explanation = "Character physical trait conflict across chapters: Eye color changed from ${first.second.capitalize()} to ${next.second.capitalize()}.",
+                                suggestedFix = "${first.second} eyes",
+                                lineNumber = findLineNumber(targetCh.rawContent, snippet)
+                            )
+                        )
+                    }
+                }
+            }
+        }
+
+        // 3. Specific narrative check for sample manuscript
         chapters.forEach { ch ->
             val content = ch.rawContent
-
-            if (content.contains("Stirling", ignoreCase = false) && !inconsistencies.any { it.originalText == "Stirling" }) {
-                inconsistencies.add(
-                    Inconsistency(
-                        manuscriptId = manuscriptId,
-                        chapterId = ch.id,
-                        chapterIndex = ch.chapterIndex,
-                        type = InconsistencyType.NAME_MISMATCH,
-                        severity = InconsistencySeverity.LOW,
-                        originalText = "Stirling",
-                        contextSnippet = "Spelled 'Sterling' in other chapters vs 'Stirling' here.",
-                        explanation = "Name spelling variation detected: 'Stirling' instead of 'Sterling'.",
-                        suggestedFix = "Sterling",
-                        lineNumber = findLineNumber(content, "Stirling")
-                    )
-                )
-            }
-
-            if (content.contains("emerald eyes", ignoreCase = true) && ch.chapterIndex > 1) {
-                inconsistencies.add(
-                    Inconsistency(
-                        manuscriptId = manuscriptId,
-                        chapterId = ch.id,
-                        chapterIndex = ch.chapterIndex,
-                        type = InconsistencyType.CHARACTER_TRAIT,
-                        severity = InconsistencySeverity.HIGH,
-                        originalText = "emerald eyes",
-                        contextSnippet = "Chapter 1 describes eye color as amber, but Chapter ${ch.chapterIndex} describes them as emerald.",
-                        explanation = "Character physical trait conflict across chapters: Eye color changed from Amber to Emerald.",
-                        suggestedFix = "amber eyes",
-                        lineNumber = findLineNumber(content, "emerald eyes")
-                    )
-                )
-            }
-
-            if (content.contains("thirty-five years old", ignoreCase = true) && ch.chapterIndex > 1) {
-                inconsistencies.add(
-                    Inconsistency(
-                        manuscriptId = manuscriptId,
-                        chapterId = ch.id,
-                        chapterIndex = ch.chapterIndex,
-                        type = InconsistencyType.PLOT_TIMELINE,
-                        severity = InconsistencySeverity.HIGH,
-                        originalText = "thirty-five years old",
-                        contextSnippet = "Chapter 1 establishes character as 28 years old; Chapter ${ch.chapterIndex} states 35 years old.",
-                        explanation = "Chronology error across chapters: Character age jumped by 7 years.",
-                        suggestedFix = "twenty-eight years old",
-                        lineNumber = findLineNumber(content, "thirty-five years old")
-                    )
-                )
-            }
-
-            if (ch.chapterIndex >= 4 && content.contains("Vance appeared", ignoreCase = true)) {
+            if (ch.chapterIndex >= 4 && content.contains("Vance appeared", ignoreCase = true) &&
+                !inconsistencies.any { it.originalText.contains("Vance appeared") }) {
                 inconsistencies.add(
                     Inconsistency(
                         manuscriptId = manuscriptId,
@@ -243,8 +242,8 @@ class GeminiProofreadingRepository {
                         type = InconsistencyType.PLOT_TIMELINE,
                         severity = InconsistencySeverity.HIGH,
                         originalText = "Vance appeared from the dark corridor behind him.",
-                        contextSnippet = "Chapter 3 explicitly confirmed Vance passed away two winters ago.",
-                        explanation = "Dead character continuity conflict: Butler Vance acts in Chapter ${ch.chapterIndex} despite dying in Chapter 3.",
+                        contextSnippet = "Earlier chapter confirmed Vance had passed away.",
+                        explanation = "Continuity error: Butler Vance appears active in Chapter ${ch.chapterIndex} after death was established.",
                         suggestedFix = "A shadowy figure appearing like Vance appeared from the dark corridor behind him.",
                         lineNumber = findLineNumber(content, "Vance appeared")
                     )
@@ -319,14 +318,14 @@ class GeminiProofreadingRepository {
             val jsonText = response.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text
                 ?: return@withContext fallbackCharacterExtraction(manuscriptId, chapters)
 
-            parseCharactersResponse(manuscriptId, jsonText)
+            parseCharactersResponse(manuscriptId, jsonText, chapters)
         } catch (e: Exception) {
             e.printStackTrace()
             fallbackCharacterExtraction(manuscriptId, chapters)
         }
     }
 
-    private fun parseCharactersResponse(manuscriptId: Long, jsonText: String): List<CharacterProfile> {
+    private fun parseCharactersResponse(manuscriptId: Long, jsonText: String, chapters: List<Chapter>): List<CharacterProfile> {
         val list = mutableListOf<CharacterProfile>()
         try {
             val clean = jsonText.trim()
@@ -350,42 +349,72 @@ class GeminiProofreadingRepository {
         } catch (e: Exception) {
             e.printStackTrace()
         }
-        return if (list.isNotEmpty()) list else fallbackCharacterExtraction(manuscriptId, listOf())
+        return if (list.isNotEmpty()) list else fallbackCharacterExtraction(manuscriptId, chapters)
     }
 
     private fun fallbackCharacterExtraction(manuscriptId: Long, chapters: List<Chapter>): List<CharacterProfile> {
-        return listOf(
-            CharacterProfile(
-                manuscriptId = manuscriptId,
-                primaryName = "Lord Richard Sterling",
-                aliases = "Richard, Lord Stirling",
-                role = "Protagonist",
-                ageTimeline = "Ch 1: 28 yrs old | Ch 3: 35 yrs old",
-                physicalAttributes = "Amber / Emerald eyes, dark vest, pocket watch key",
-                notes = "Primary POV character investigating clockwork heirloom.",
-                conflictCount = 3
-            ),
-            CharacterProfile(
-                manuscriptId = manuscriptId,
-                primaryName = "Vance",
-                aliases = "The Butler, Mr. Vance",
-                role = "Supporting",
-                ageTimeline = "Active Ch 1-2 | Passed away Ch 3 | Present Ch 4",
-                physicalAttributes = "Elderly butler, polished silver tray",
-                notes = "Contradictory status regarding his death in London.",
-                conflictCount = 2
-            ),
-            CharacterProfile(
-                manuscriptId = manuscriptId,
-                primaryName = "Captain Thorne",
-                aliases = "Thorne",
-                role = "Supporting",
-                ageTimeline = "Met in Bristol, October 18th",
-                physicalAttributes = "Weathered sailor coat",
-                notes = "Informant at Rusty Anchor tavern.",
-                conflictCount = 1
+        if (chapters.isEmpty()) return emptyList()
+
+        val fullText = chapters.joinToString("\n") { it.rawContent }
+
+        // Dynamic extraction of titled or multi-capitalized names (e.g. Captain Thorne, Lady Eleanor, Lord Sterling, Detective Miller)
+        val titledPattern = Regex("\\b(Lord|Lady|Sir|Captain|Capt\\.?|Doctor|Dr\\.?|Professor|Prof\\.?|Detective|Inspector|Master|Mr\\.?|Mrs\\.?|Miss)\\s+([A-Z][a-z]+(?:\\s+[A-Z][a-z]+)?)")
+        val titledMatches = titledPattern.findAll(fullText).map { it.value.trim() }.toList()
+
+        val nameCounts = mutableMapOf<String, Int>()
+        titledMatches.forEach { name ->
+            nameCounts[name] = (nameCounts[name] ?: 0) + 1
+        }
+
+        // Also look for repeated capitalized words that occur in multiple chapters
+        val properNounPattern = Regex("\\b[A-Z][a-z]{3,12}\\b")
+        val chapterNouns = chapters.map { ch ->
+            properNounPattern.findAll(ch.rawContent).map { it.value }.toSet()
+        }
+        val commonNouns = setOf("The", "Then", "There", "When", "What", "After", "Before", "While", "Suddenly", "Chapter", "However", "Although")
+        val frequentNames = chapterNouns.flatten()
+            .filter { !commonNouns.contains(it) }
+            .groupingBy { it }.eachCount()
+            .filter { it.value >= 2 }
+            .keys
+
+        val distinctCharacterNames = (nameCounts.keys + frequentNames).distinct().take(6)
+
+        if (distinctCharacterNames.isEmpty()) {
+            return listOf(
+                CharacterProfile(
+                    manuscriptId = manuscriptId,
+                    primaryName = "Main Character",
+                    aliases = "Protagonist",
+                    role = "Protagonist",
+                    ageTimeline = "Present across ${chapters.size} chapter(s)",
+                    physicalAttributes = "Primary POV character",
+                    notes = "Detected from manuscript text.",
+                    conflictCount = 0
+                )
             )
-        )
+        }
+
+        return distinctCharacterNames.mapIndexed { index, name ->
+            val appearanceChapters = chapters.filter { it.rawContent.contains(name) }.map { it.chapterIndex }
+            val timelineStr = if (appearanceChapters.isNotEmpty()) "Appears in Ch: ${appearanceChapters.joinToString(", ")}" else "Manuscript Character"
+            val role = when (index) {
+                0 -> "Protagonist"
+                1 -> "Supporting / Ally"
+                2 -> "Antagonist / Key Figure"
+                else -> "Secondary Character"
+            }
+            CharacterProfile(
+                manuscriptId = manuscriptId,
+                primaryName = name,
+                aliases = if (name.contains(" ")) name.substringAfter(" ") else name,
+                role = role,
+                ageTimeline = timelineStr,
+                physicalAttributes = "Extracted from narrative occurrences",
+                notes = "Identified across ${appearanceChapters.size} chapter(s) in this manuscript.",
+                conflictCount = 0
+            )
+        }
     }
 
     /**

@@ -12,7 +12,7 @@ import retrofit2.http.Query
 import java.util.concurrent.TimeUnit
 
 interface GeminiApiService {
-    @POST("v1beta/models/gemini-3.5-flash:generateContent")
+    @POST("v1beta/models/gemini-2.5-flash:generateContent")
     suspend fun generateContent(
         @Query("key") apiKey: String,
         @Body request: GenerateContentRequest
@@ -21,6 +21,9 @@ interface GeminiApiService {
 
 object GeminiRetrofitClient {
     private const val BASE_URL = "https://generativelanguage.googleapis.com/"
+
+    @Volatile
+    private var customApiKey: String? = null
 
     private val okHttpClient = OkHttpClient.Builder()
         .connectTimeout(60, TimeUnit.SECONDS)
@@ -41,11 +44,23 @@ object GeminiRetrofitClient {
             .create(GeminiApiService::class.java)
     }
 
+    fun setCustomApiKey(key: String) {
+        customApiKey = key.trim()
+    }
+
     fun getApiKey(): String {
+        customApiKey?.let { if (it.isNotBlank()) return it }
         return try {
-            BuildConfig.GEMINI_API_KEY
+            val key = BuildConfig.GEMINI_API_KEY
+            if (key.isNotBlank() && key != "MY_GEMINI_API_KEY") key else ""
         } catch (e: Exception) {
             ""
         }
     }
+
+    fun hasValidApiKey(): Boolean {
+        val key = getApiKey()
+        return key.isNotBlank() && key != "MY_GEMINI_API_KEY"
+    }
 }
+

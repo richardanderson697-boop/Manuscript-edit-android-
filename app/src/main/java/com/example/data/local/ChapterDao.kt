@@ -24,6 +24,9 @@ interface ChapterDao {
     @Update
     suspend fun updateChapter(chapter: Chapter)
 
+    @Query("DELETE FROM chapters WHERE id = :id")
+    suspend fun deleteChapterById(id: Long)
+
     @Query("DELETE FROM chapters WHERE manuscriptId = :manuscriptId")
     suspend fun deleteChaptersByManuscriptId(manuscriptId: Long)
 }

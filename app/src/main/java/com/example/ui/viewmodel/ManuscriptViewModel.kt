@@ -5,6 +5,11 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.local.AppDatabase
 import com.example.data.model.*
+import com.example.data.remote.Candidate
+import com.example.data.remote.GeminiRetrofitClient
+import com.example.data.remote.GenerateContentRequest
+import com.example.data.remote.Content
+import com.example.data.remote.Part
 import com.example.data.repository.GeminiProofreadingRepository
 import com.example.data.repository.ManuscriptRepository
 import kotlinx.coroutines.flow.*
@@ -340,6 +345,110 @@ class ManuscriptViewModel(application: Application) : AndroidViewModel(applicati
                 section.trim()
             }
             chapterTitle to if (content.isBlank()) section.trim() else content
+        }
+    }
+
+    fun isApiKeyConfigured(): Boolean {
+        return GeminiRetrofitClient.hasValidApiKey()
+    }
+
+    fun setCustomApiKey(key: String) {
+        GeminiRetrofitClient.setCustomApiKey(key)
+        _notification.value = UiNotification("Gemini API key updated.")
+    }
+
+    fun getCurrentApiKey(): String {
+        return GeminiRetrofitClient.getApiKey()
+    }
+
+    fun testApiKeyConnection(onResult: (Boolean, String) -> Unit) {
+        viewModelScope.launch {
+            val key = GeminiRetrofitClient.getApiKey()
+            if (key.isBlank()) {
+                onResult(false, "No API key found. Please enter a key.")
+                return@launch
+            }
+            try {
+                val dummyRequest = GenerateContentRequest(
+                    contents = listOf(Content(parts = listOf(Part(text = "Respond with 'OK' only."))))
+                )
+                val resp = GeminiRetrofitClient.service.generateContent(key, dummyRequest)
+                val candidate: Candidate? = resp.candidates?.firstOrNull()
+                val candidateContent: Content? = candidate?.content
+                val firstPart: Part? = candidateContent?.parts?.firstOrNull()
+                val text: String? = firstPart?.text
+                if (!text.isNullOrBlank()) {
+                    onResult(true, "Gemini 2.5 Flash connected successfully!")
+                } else {
+                    onResult(false, "Received empty response from Gemini API.")
+                }
+            } catch (e: Exception) {
+                onResult(false, "Connection error: ${e.message ?: "Invalid key or network failure"}")
+            }
+        }
+    }
+
+    fun deleteCharacter(charId: Long) {
+        viewModelScope.launch {
+            manuscriptRepository.characterDao.deleteCharacterById(charId)
+            _notification.value = UiNotification("Character profile removed.")
+        }
+    }
+
+    fun createNewBook(
+        title: String,
+        author: String,
+        firstChapterTitle: String,
+        firstChapterText: String
+    ) {
+        viewModelScope.launch {
+            _isScanning.value = true
+            _scanProgressText.value = "Creating new manuscript..."
+            try {
+                val newMs = Manuscript(
+                    title = if (title.isBlank()) "Untitled Novel" else title.trim(),
+                    author = if (author.isBlank()) "Author" else author.trim(),
+                    totalChapters = 1,
+                    totalInconsistenciesCount = 0,
+                    sourceType = "MANUAL_ENTRY"
+                )
+                val msId = manuscriptRepository.insertManuscript(newMs)
+                val firstChapter = Chapter(
+                    manuscriptId = msId,
+                    chapterIndex = 1,
+                    title = if (firstChapterTitle.isBlank()) "Chapter 1" else firstChapterTitle.trim(),
+                    rawContent = if (firstChapterText.isBlank()) "Start writing your chapter here..." else firstChapterText.trim()
+                )
+                manuscriptRepository.insertChapters(listOf(firstChapter))
+                _selectedManuscriptId.value = msId
+
+                val chapters = listOf(firstChapter)
+                val found = proofreaderRepository.scanManuscriptForInconsistencies(msId, chapters)
+                manuscriptRepository.insertInconsistencies(found)
+
+                val chars = proofreaderRepository.extractCharactersWithAI(msId, chapters)
+                manuscriptRepository.insertCharacters(chars)
+
+                _notification.value = UiNotification("Created '${newMs.title}' successfully!")
+            } catch (e: Exception) {
+                _notification.value = UiNotification("Creation error: ${e.message}", isError = true)
+            } finally {
+                _isScanning.value = false
+            }
+        }
+    }
+
+    fun deleteChapter(chapterId: Long) {
+        val msId = _selectedManuscriptId.value ?: return
+        viewModelScope.launch {
+            manuscriptRepository.chapterDao.deleteChapterById(chapterId)
+            val remaining = manuscriptRepository.getChaptersForManuscriptDirect(msId)
+            val currentMs = activeManuscript.value
+            if (currentMs != null) {
+                manuscriptRepository.updateManuscript(currentMs.copy(totalChapters = remaining.size))
+            }
+            // Re-index remaining chapters if needed
+            _notification.value = UiNotification("Chapter removed.")
         }
     }
 

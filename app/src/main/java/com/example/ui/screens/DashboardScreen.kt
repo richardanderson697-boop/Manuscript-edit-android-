@@ -12,6 +12,7 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Book
 import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -25,10 +26,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.Manuscript
+import com.example.ui.components.ApiKeyDialog
 import com.example.ui.components.ImportManuscriptBottomSheet
 import com.example.ui.components.ManuscriptCard
 import com.example.ui.viewmodel.ManuscriptViewModel
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DashboardScreen(
     viewModel: ManuscriptViewModel,
@@ -42,19 +45,64 @@ fun DashboardScreen(
     val scanProgressText by viewModel.scanProgressText.collectAsState()
 
     var showImportSheet by remember { mutableStateOf(false) }
+    var showApiKeyDialog by remember { mutableStateOf(false) }
 
     val pendingCount = activeInconsistencies.count { it.status == com.example.data.model.InconsistencyStatus.PENDING }
     val resolvedCount = activeInconsistencies.count { it.status != com.example.data.model.InconsistencyStatus.PENDING }
+    val isApiActive = viewModel.isApiKeyConfigured()
 
     Scaffold(
         containerColor = Color(0xFF12101C),
+        topBar = {
+            TopAppBar(
+                title = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "Manuscript Sentinel",
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White,
+                            fontSize = 18.sp
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Box(
+                            modifier = Modifier
+                                .background(
+                                    if (isApiActive) Color(0xFF1B3828) else Color(0xFF332A1C),
+                                    RoundedCornerShape(6.dp)
+                                )
+                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                        ) {
+                            Text(
+                                text = if (isApiActive) "Gemini 2.5 Active" else "Heuristic Engine",
+                                color = if (isApiActive) Color(0xFF81C784) else Color(0xFFE2B563),
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                },
+                actions = {
+                    IconButton(
+                        onClick = { showApiKeyDialog = true },
+                        modifier = Modifier.testTag("open_api_key_settings_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Key,
+                            contentDescription = "AI Key Settings",
+                            tint = Color(0xFFE2B563)
+                        )
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color(0xFF1C182A))
+            )
+        },
         floatingActionButton = {
             ExtendedFloatingActionButton(
                 onClick = { showImportSheet = true },
                 containerColor = Color(0xFFE2B563),
                 contentColor = Color(0xFF12101C),
                 icon = { Icon(Icons.Default.Add, contentDescription = null) },
-                text = { Text("Import Manuscript", fontWeight = FontWeight.Bold) },
+                text = { Text("Add / Import Book", fontWeight = FontWeight.Bold) },
                 modifier = Modifier.testTag("fab_import_manuscript")
             )
         },
@@ -227,6 +275,53 @@ fun DashboardScreen(
                 }
             }
 
+            if (manuscripts.isEmpty()) {
+                item {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFF1E192D))
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(24.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.Book,
+                                contentDescription = null,
+                                tint = Color(0xFFE2B563),
+                                modifier = Modifier.size(40.dp)
+                            )
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Text(
+                                text = "No Manuscripts Yet",
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White,
+                                fontSize = 16.sp
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "Create a new book or import text files to begin multi-chapter proofreading.",
+                                color = Color(0xFFA099B8),
+                                fontSize = 12.sp
+                            )
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Button(
+                                onClick = { showImportSheet = true },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFFE2B563),
+                                    contentColor = Color(0xFF12101C)
+                                )
+                            ) {
+                                Text("Add First Manuscript", fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                }
+            }
+
             items(manuscripts) { ms ->
                 ManuscriptCard(
                     manuscript = ms,
@@ -283,7 +378,18 @@ fun DashboardScreen(
             },
             onImportGoogleDocs = { url, title, author ->
                 viewModel.importFromGoogleDocs(url, title, author)
+            },
+            onCreateNewBook = { title, author, chapterTitle, chapterContent ->
+                viewModel.createNewBook(title, author, chapterTitle, chapterContent)
             }
         )
     }
+
+    if (showApiKeyDialog) {
+        ApiKeyDialog(
+            viewModel = viewModel,
+            onDismiss = { showApiKeyDialog = false }
+        )
+    }
 }
+
