@@ -1,0 +1,6 @@
+{
+  "name": "Manuscript Sentinel",
+  "description": "Proofreading and inconsistency detection platform for authors with character consistency tracking and Google Docs integration.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
