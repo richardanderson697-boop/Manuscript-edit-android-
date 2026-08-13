@@ -1,5 +1,8 @@
 package com.example.ui.components
 
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -7,6 +10,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material3.*
@@ -14,10 +18,13 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import java.io.BufferedReader
+import java.io.InputStreamReader
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -27,12 +34,35 @@ fun ImportManuscriptBottomSheet(
     onImportGoogleDocs: (url: String, title: String, author: String) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     var selectedTab by remember { mutableIntStateOf(0) } // 0: Text Paste / File, 1: Google Docs
 
     var title by remember { mutableStateOf("") }
     var author by remember { mutableStateOf("") }
     var rawText by remember { mutableStateOf("") }
     var googleDocsUrl by remember { mutableStateOf("") }
+    var selectedFileName by remember { mutableStateOf("") }
+
+    val filePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        uri?.let { fileUri ->
+            try {
+                context.contentResolver.openInputStream(fileUri)?.use { inputStream ->
+                    val reader = BufferedReader(InputStreamReader(inputStream))
+                    val content = reader.readText()
+                    rawText = content
+                    val fileName = fileUri.lastPathSegment?.substringAfterLast('/') ?: "Imported Manuscript"
+                    selectedFileName = fileName.removeSuffix(".txt").removeSuffix(".md")
+                    if (title.isBlank()) {
+                        title = selectedFileName.replace('_', ' ').replace('-', ' ').capitalize()
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -129,14 +159,32 @@ fun ImportManuscriptBottomSheet(
             Spacer(modifier = Modifier.height(12.dp))
 
             if (selectedTab == 0) {
+                OutlinedButton(
+                    onClick = { filePickerLauncher.launch("text/*") },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = Color(0xFFE2B563)
+                    )
+                ) {
+                    Icon(Icons.Default.FolderOpen, contentDescription = null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        if (selectedFileName.isNotEmpty()) "File Selected: $selectedFileName"
+                        else "Pick .txt File from Device Storage"
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
                 OutlinedTextField(
                     value = rawText,
                     onValueChange = { rawText = it },
                     label = { Text("Manuscript Text or Paste Content") },
-                    placeholder = { Text("Paste chapter text here... (Supports 'Chapter 1', 'Chapter 2' splitting)") },
+                    placeholder = { Text("Paste manuscript text here... (Supports multi-chapter 'Chapter 1', 'Chapter 2' text)") },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(200.dp)
+                        .height(180.dp)
                         .testTag("import_raw_text_field"),
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedBorderColor = Color(0xFFE2B563),
@@ -245,3 +293,4 @@ fun ImportManuscriptBottomSheet(
         }
     }
 }
+

@@ -42,6 +42,8 @@ fun EditorProofreadScreen(
 
     var activeTab by remember { mutableIntStateOf(0) } // 0: Inconsistencies Inspector, 1: Live Manuscript Reader / Manual Edit
     var chapterDropdownExpanded by remember { mutableStateOf(false) }
+    var showAddChapterDialog by remember { mutableStateOf(false) }
+    var newChapterContent by remember { mutableStateOf("") }
 
     val filteredInconsistencies = inconsistencies.filter { inc ->
         (selectedChapterIdx == 0 || inc.chapterIndex == selectedChapterIdx) &&
@@ -52,6 +54,66 @@ fun EditorProofreadScreen(
 
     var editableChapterText by remember(activeChapterObj) {
         mutableStateOf(activeChapterObj?.modifiedContent ?: "")
+    }
+
+    if (showAddChapterDialog) {
+        AlertDialog(
+            onDismissRequest = { showAddChapterDialog = false },
+            containerColor = Color(0xFF1C182A),
+            title = {
+                Text(
+                    text = "Add Chapter to '${activeManuscript?.title ?: "Manuscript"}'",
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 18.sp
+                )
+            },
+            text = {
+                Column {
+                    Text(
+                        text = "Paste your next chapter text below. It will be linked as Chapter ${(chapters.maxOfOrNull { it.chapterIndex } ?: 0) + 1} and scanned for cross-chapter continuity.",
+                        color = Color(0xFFC3BBDC),
+                        fontSize = 12.sp
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    OutlinedTextField(
+                        value = newChapterContent,
+                        onValueChange = { newChapterContent = it },
+                        placeholder = { Text("Paste chapter text here... (Supports 'Chapter 2', 'Chapter 3' headings)") },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(180.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = Color(0xFFE2B563),
+                            unfocusedBorderColor = Color(0xFF3B3454),
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White
+                        )
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val activeMsId = activeManuscript?.id
+                        if (activeMsId != null && newChapterContent.isNotBlank()) {
+                            viewModel.appendChaptersToManuscript(activeMsId, newChapterContent)
+                            newChapterContent = ""
+                            showAddChapterDialog = false
+                        }
+                    },
+                    enabled = newChapterContent.isNotBlank(),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE2B563), contentColor = Color(0xFF12101C))
+                ) {
+                    Text("Add & Cross-Scan", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAddChapterDialog = false }) {
+                    Text("Cancel", color = Color(0xFFA099B8))
+                }
+            }
+        )
     }
 
     Column(
@@ -123,6 +185,20 @@ fun EditorProofreadScreen(
                                     }
                                 )
                             }
+                            HorizontalDivider(color = Color(0xFF3B3454))
+                            DropdownMenuItem(
+                                text = {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Default.Add, contentDescription = null, tint = Color(0xFFE2B563), modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("+ Add Next Chapter", color = Color(0xFFE2B563), fontWeight = FontWeight.Bold)
+                                    }
+                                },
+                                onClick = {
+                                    chapterDropdownExpanded = false
+                                    showAddChapterDialog = true
+                                }
+                            )
                         }
                     }
                 }

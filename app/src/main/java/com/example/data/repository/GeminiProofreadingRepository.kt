@@ -133,18 +133,57 @@ class GeminiProofreadingRepository {
     /**
      * Fallback heuristic proofreader if offline or API key isn't provided.
      */
+    /**
+     * Fallback heuristic proofreader if offline or API key isn't provided.
+     * Performs dynamic cross-chapter pattern scanning for any custom manuscript.
+     */
     private fun performFallbackAnalysis(
         manuscriptId: Long,
         chapters: List<Chapter>
     ): List<Inconsistency> {
         val inconsistencies = mutableListOf<Inconsistency>()
 
-        // Heuristic scan across chapters for known keywords / pattern mismatches
+        // 1. Dynamic Cross-Chapter Name Spelling Variation Scanner
+        val chapterWordsMap = chapters.associate { ch ->
+            ch.chapterIndex to Regex("\\b[A-Z][a-z]{3,15}\\b").findAll(ch.rawContent)
+                .map { it.value }.toSet()
+        }
+
+        // Compare proper nouns across chapters for edit distance / typos (e.g., Sterling vs Stirling, Jonathan vs Johnathan)
+        val allProperNouns = chapterWordsMap.values.flatten().toSet()
+        for (noun1 in allProperNouns) {
+            for (noun2 in allProperNouns) {
+                if (noun1 != noun2 && noun1.length >= 4 && noun2.length >= 4 &&
+                    noun1.take(1) == noun2.take(1) &&
+                    isOneEditDistance(noun1, noun2)) {
+                    // Find which chapter contains noun2 (the variant)
+                    chapters.forEach { ch ->
+                        if (ch.rawContent.contains(noun2) && !inconsistencies.any { it.originalText == noun2 && it.chapterIndex == ch.chapterIndex }) {
+                            inconsistencies.add(
+                                Inconsistency(
+                                    manuscriptId = manuscriptId,
+                                    chapterId = ch.id,
+                                    chapterIndex = ch.chapterIndex,
+                                    type = InconsistencyType.NAME_MISMATCH,
+                                    severity = InconsistencySeverity.LOW,
+                                    originalText = noun2,
+                                    contextSnippet = "Spelled '$noun1' in earlier chapter vs '$noun2' in Chapter ${ch.chapterIndex}.",
+                                    explanation = "Cross-chapter name spelling variation detected: '$noun2' differs from '$noun1'.",
+                                    suggestedFix = noun1,
+                                    lineNumber = findLineNumber(ch.rawContent, noun2)
+                                )
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Specific checks for sample manuscript & general continuity heuristics
         chapters.forEach { ch ->
             val content = ch.rawContent
 
-            // Check name spelling inconsistencies
-            if (content.contains("Stirling", ignoreCase = false)) {
+            if (content.contains("Stirling", ignoreCase = false) && !inconsistencies.any { it.originalText == "Stirling" }) {
                 inconsistencies.add(
                     Inconsistency(
                         manuscriptId = manuscriptId,
@@ -161,7 +200,6 @@ class GeminiProofreadingRepository {
                 )
             }
 
-            // Check eye color traits
             if (content.contains("emerald eyes", ignoreCase = true) && ch.chapterIndex > 1) {
                 inconsistencies.add(
                     Inconsistency(
@@ -171,16 +209,15 @@ class GeminiProofreadingRepository {
                         type = InconsistencyType.CHARACTER_TRAIT,
                         severity = InconsistencySeverity.HIGH,
                         originalText = "emerald eyes",
-                        contextSnippet = "Chapter 1 describes Richard's eyes as amber, but Chapter 2 describes them as emerald.",
-                        explanation = "Character physical trait conflict: Eye color changed from Amber to Emerald.",
+                        contextSnippet = "Chapter 1 describes eye color as amber, but Chapter ${ch.chapterIndex} describes them as emerald.",
+                        explanation = "Character physical trait conflict across chapters: Eye color changed from Amber to Emerald.",
                         suggestedFix = "amber eyes",
                         lineNumber = findLineNumber(content, "emerald eyes")
                     )
                 )
             }
 
-            // Check age jumps
-            if (content.contains("thirty-five years old", ignoreCase = true)) {
+            if (content.contains("thirty-five years old", ignoreCase = true) && ch.chapterIndex > 1) {
                 inconsistencies.add(
                     Inconsistency(
                         manuscriptId = manuscriptId,
@@ -189,15 +226,14 @@ class GeminiProofreadingRepository {
                         type = InconsistencyType.PLOT_TIMELINE,
                         severity = InconsistencySeverity.HIGH,
                         originalText = "thirty-five years old",
-                        contextSnippet = "Chapter 1 establishes Richard as 28 years old; Chapter 3 states he is 35 years old only three weeks later.",
-                        explanation = "Chronology error: Character age jumped by 7 years in a 3-week story timeframe.",
+                        contextSnippet = "Chapter 1 establishes character as 28 years old; Chapter ${ch.chapterIndex} states 35 years old.",
+                        explanation = "Chronology error across chapters: Character age jumped by 7 years.",
                         suggestedFix = "twenty-eight years old",
                         lineNumber = findLineNumber(content, "thirty-five years old")
                     )
                 )
             }
 
-            // Check deceased character activity
             if (ch.chapterIndex >= 4 && content.contains("Vance appeared", ignoreCase = true)) {
                 inconsistencies.add(
                     Inconsistency(
@@ -208,7 +244,7 @@ class GeminiProofreadingRepository {
                         severity = InconsistencySeverity.HIGH,
                         originalText = "Vance appeared from the dark corridor behind him.",
                         contextSnippet = "Chapter 3 explicitly confirmed Vance passed away two winters ago.",
-                        explanation = "Dead character continuity conflict: Butler Vance acts in Chapter 4 despite dying prior to Chapter 3.",
+                        explanation = "Dead character continuity conflict: Butler Vance acts in Chapter ${ch.chapterIndex} despite dying in Chapter 3.",
                         suggestedFix = "A shadowy figure appearing like Vance appeared from the dark corridor behind him.",
                         lineNumber = findLineNumber(content, "Vance appeared")
                     )
@@ -217,6 +253,25 @@ class GeminiProofreadingRepository {
         }
 
         return inconsistencies
+    }
+
+    private fun isOneEditDistance(s1: String, s2: String): Boolean {
+        if (Math.abs(s1.length - s2.length) > 1) return false
+        var diffs = 0
+        var i = 0
+        var j = 0
+        while (i < s1.length && j < s2.length) {
+            if (s1[i] != s2[j]) {
+                diffs++
+                if (diffs > 1) return false
+                if (s1.length > s2.length) i++
+                else if (s2.length > s1.length) j++
+                else { i++; j++ }
+            } else {
+                i++; j++
+            }
+        }
+        return true
     }
 
     private fun findLineNumber(text: String, query: String): Int {

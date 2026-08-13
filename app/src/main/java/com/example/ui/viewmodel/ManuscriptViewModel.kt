@@ -228,7 +228,7 @@ class ManuscriptViewModel(application: Application) : AndroidViewModel(applicati
                 manuscriptRepository.insertChapters(chapterEntities)
                 _selectedManuscriptId.value = msId
 
-                // Automatically trigger scan on newly imported manuscript
+                // Automatically trigger full cross-chapter scan on newly imported manuscript
                 val insertedChapters = manuscriptRepository.getChaptersForManuscriptDirect(msId)
                 val foundInconsistencies = proofreaderRepository.scanManuscriptForInconsistencies(msId, insertedChapters)
                 manuscriptRepository.insertInconsistencies(foundInconsistencies)
@@ -243,6 +243,55 @@ class ManuscriptViewModel(application: Application) : AndroidViewModel(applicati
                 _notification.value = UiNotification("Imported '${newMs.title}' with ${parsedChapters.size} chapters and ${foundInconsistencies.size} initial findings!")
             } catch (e: Exception) {
                 _notification.value = UiNotification("Import error: ${e.message}", isError = true)
+            } finally {
+                _isScanning.value = false
+            }
+        }
+    }
+
+    /**
+     * Appends new chapters to an existing manuscript (e.g. when adding subsequent chapters)
+     * and re-runs cross-chapter consistency scan across ALL chapters together.
+     */
+    fun appendChaptersToManuscript(msId: Long, rawText: String) {
+        viewModelScope.launch {
+            _isScanning.value = true
+            _scanProgressText.value = "Appending chapters & evaluating cross-chapter continuity..."
+
+            try {
+                val existingChapters = manuscriptRepository.getChaptersForManuscriptDirect(msId)
+                val currentMaxIndex = existingChapters.maxOfOrNull { it.chapterIndex } ?: 0
+
+                val newParsedChapters = parseRawTextIntoChapters(rawText, startingIndex = currentMaxIndex + 1)
+                val newEntities = newParsedChapters.mapIndexed { idx, (chTitle, chText) ->
+                    Chapter(
+                        manuscriptId = msId,
+                        chapterIndex = currentMaxIndex + idx + 1,
+                        title = chTitle,
+                        rawContent = chText
+                    )
+                }
+                manuscriptRepository.insertChapters(newEntities)
+
+                val allChapters = manuscriptRepository.getChaptersForManuscriptDirect(msId)
+
+                val currentMs = activeManuscript.value
+                if (currentMs != null) {
+                    manuscriptRepository.updateManuscript(
+                        currentMs.copy(totalChapters = allChapters.size)
+                    )
+                }
+
+                // Re-scan ALL chapters in sequence for cross-chapter context consistency
+                val foundInconsistencies = proofreaderRepository.scanManuscriptForInconsistencies(msId, allChapters)
+                manuscriptRepository.insertInconsistencies(foundInconsistencies)
+
+                val updatedCharacters = proofreaderRepository.extractCharactersWithAI(msId, allChapters)
+                manuscriptRepository.insertCharacters(updatedCharacters)
+
+                _notification.value = UiNotification("Appended ${newEntities.size} new chapter(s)! Cross-chapter scan complete (${foundInconsistencies.size} issues found across ${allChapters.size} chapters).")
+            } catch (e: Exception) {
+                _notification.value = UiNotification("Error adding chapters: ${e.message}", isError = true)
             } finally {
                 _isScanning.value = false
             }
@@ -268,24 +317,23 @@ class ManuscriptViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    private fun parseRawTextIntoChapters(fullText: String): List<Pair<String, String>> {
-        val chapterRegex = Regex("(?i)(?=(?:chapter|ch\\.|act)\\s+(?:\\d+|[ivxlcdm]+))")
+    private fun parseRawTextIntoChapters(fullText: String, startingIndex: Int = 1): List<Pair<String, String>> {
+        val chapterRegex = Regex("(?i)(?=(?:chapter|ch\\.|act|part)\\s+(?:\\d+|[ivxlcdm]+|one|two|three|four|five|six|seven|eight|nine|ten))")
         val splits = fullText.split(chapterRegex).filter { it.isNotBlank() }
 
         if (splits.size <= 1) {
-            // If no explicit "Chapter X" keyword found, attempt splitting by double empty lines or word chunking
             val paragraphs = fullText.split(Regex("\n\\s*\n\\s*\n"))
             if (paragraphs.size > 1) {
                 return paragraphs.mapIndexed { idx, p ->
-                    "Chapter ${idx + 1}" to p.trim()
+                    "Chapter ${startingIndex + idx}" to p.trim()
                 }
             }
-            return listOf("Chapter 1" to fullText.trim())
+            return listOf("Chapter $startingIndex" to fullText.trim())
         }
 
         return splits.mapIndexed { idx, section ->
-            val firstLine = section.trim().lines().firstOrNull() ?: "Chapter ${idx + 1}"
-            val chapterTitle = if (firstLine.length < 50) firstLine else "Chapter ${idx + 1}"
+            val firstLine = section.trim().lines().firstOrNull() ?: "Chapter ${startingIndex + idx}"
+            val chapterTitle = if (firstLine.length < 60) firstLine else "Chapter ${startingIndex + idx}"
             val content = if (section.trim().lines().size > 1) {
                 section.trim().lines().drop(1).joinToString("\n").trim()
             } else {
